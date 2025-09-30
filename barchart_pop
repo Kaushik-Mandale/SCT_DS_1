@@ -1,0 +1,96 @@
+import wbgapi as wb
+import pandas as pd
+import plotly.express as px
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+import time
+
+# Configure retry strategy and session
+retry_strategy = Retry(
+    total=3,
+    backoff_factor=1,
+    status_forcelist=[500, 502, 503, 504]
+)
+adapter = HTTPAdapter(max_retries=retry_strategy)
+session = requests.Session()
+session.mount("https://", adapter)
+session.mount("http://", adapter)
+session.timeout = 30
+
+try:
+    # Define indicator and countries
+    indicator = "SP.POP.TOTL"  # Total population
+    countries = ["IND", "CHN", "USA", "BRA", "NGA"]  # ISO codes
+
+    # Get the most recent data with retry logic
+    for attempt in range(3):
+        try:
+            df = wb.data.DataFrame(indicator, countries, mrv=1)
+            break
+        except requests.exceptions.RequestException:
+            if attempt == 2:
+                raise
+            time.sleep(5)
+
+    df = df.reset_index()
+    df.columns = ["CountryCode", "Population"]
+
+    # Get country info
+    info_list = []
+    for code in countries:
+        try:
+            country_data = wb.economy.get(code)
+            info = {
+                "id": code,
+                "name": country_data.metadata.get('name', code),
+                "region": country_data.metadata.get('region', {}).get('value', 'N/A')
+            }
+        except Exception:
+            info = {"id": code, "name": code, "region": "N/A"}
+        info_list.append(info)
+
+    countries_info = pd.DataFrame(info_list)
+    df = df.merge(countries_info, left_on="CountryCode", right_on="id", how="left")
+
+    # Convert population to millions
+    df["Population_Millions"] = df["Population"] / 1e6
+
+    # Create interactive bar chart
+    fig = px.bar(
+        df,
+        x="name",
+        y="Population_Millions",
+        title="Population by Country (2023)",
+        labels={
+            "name": "Country",
+            "Population_Millions": "Population (Millions)",
+            "region": "Region"
+        },
+        color="region",
+        hover_data={"Population_Millions": ":.2f", "region": True}
+    )
+
+    # Customize layout
+    fig.update_layout(
+        xaxis_tickangle=-45,
+        yaxis_title="Population (Millions)",
+        xaxis_title="Country",
+        showlegend=True,
+        template="plotly_white"
+    )
+
+    # Save and display
+    fig.write_html("population_chart_interactive.html")
+    # Ensure kaleido is installed for write_image
+    try:
+        fig.write_image("population_chart.png")
+    except ValueError:
+        print("Warning: 'kaleido' or 'orca' not installed for PNG export. Install with 'pip install kaleido'.")
+
+    # Show chart in browser window
+    fig.show(renderer='browser')
+
+except Exception as e:
+    print(f"Error: {str(e)}")
+    print("Please check your internet connection and try again.")
